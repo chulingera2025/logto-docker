@@ -1,0 +1,47 @@
+services:
+  logto-migration:
+    image: svhd/logto:${TAG}
+    command: ["cli", "db", "seed", "--", "--swe"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB_URL=${DB_URL}
+
+  app:
+    image: svhd/logto:${TAG}
+    container_name: logto-app
+    command: ["start"]
+    depends_on:
+      logto-migration:
+        condition: service_completed_successfully
+    ports:
+      - "3001:3001"
+      - "3002:3002"
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - TRUST_PROXY_HEADER=${TRUST_PROXY_HEADER}
+      - DB_URL=${DB_URL}
+      - ENDPOINT=${ENDPOINT}
+      - ADMIN_ENDPOINT=${ADMIN_ENDPOINT}
+    restart: always
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: logto-postgres
+    user: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - logto-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+volumes:
+  logto-pg:
