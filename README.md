@@ -1,42 +1,97 @@
-# Logto Docker Deployment
+# Logto Docker Compose
 
-Docker Compose setup for [Logto](https://logto.io/) — an open-source Auth0 alternative for identity and access management.
+Production-grade single-instance [Logto](https://logto.io/) deployment — an open-source identity platform (Auth0 alternative). Also supports multi-instance setups with a shared remote database.
+
+## Architecture
+
+```
+                   ┌──────────────────────┐
+                   │   Caddy (reverse)     │
+                   │   :443 → :3001, :3002 │
+                   └──────┬───────────────┘
+                          │
+              ┌───────────┴───────────┐
+              ▼                       ▼
+     auth.example.com        console.example.com
+         :3001                      :3002
+              │                       │
+              └───────────┬───────────┘
+                          ▼
+              ┌──────────────────────┐
+              │     logto-app        │
+              │   (svhd/logto)       │
+              └──────────┬───────────┘
+                         │
+                         ▼
+              ┌──────────────────────┐
+              │  logto-postgres      │
+              │  (postgres:17-alpine) │
+              └──────────────────────┘
+```
 
 ## Services
 
-| Service           | Image              | Port  |
-| ----------------- | ------------------ | ----- |
-| `logto-app`       | `svhd/logto:latest` | 3001 (auth), 3002 (admin console) |
-| `logto-postgres`  | `postgres:17-alpine` | 5432 (internal) |
+| Service              | Image                  | Purpose                                    |
+| -------------------- | ---------------------- | ------------------------------------------ |
+| `logto-migration`    | `svhd/logto:${TAG}`    | One-shot DB seed — runs once, then exits   |
+| `app`                | `svhd/logto:${TAG}`    | Logto core (auth API + admin console)      |
+| `postgres`           | `postgres:17-alpine`   | PostgreSQL database with healthcheck       |
 
-## URLs
+### Design notes
 
-- **Auth endpoint:** `https://auth.<YOUR_DOMAIN>`
-- **Admin console:** `https://console.<YOUR_DOMAIN>`
+- **`logto-migration`** is a one-time container that seeds the database schema. It depends on `postgres` being healthy and the `app` service waits for it to complete before starting. On subsequent `docker compose up` runs it exits immediately if the DB is already seeded.
+- Ports `3001` (auth API) and `3002` (admin console) are exposed — put a reverse proxy (Caddy, Nginx) in front with TLS.
 
-## Quick Start
+## Quick Start (single instance)
 
-1. Copy the example env file and fill in your values:
+```bash
+# 1. Copy and fill in environment
+cp .env.example .env
+# Generate a DB password: openssl rand -hex 32
 
-   ```bash
-   cp .env.example .env
-   ```
+# 2. Start
+docker compose up -d
 
-2. Generate a secure database password:
+# 3. Visit https://console.<YOUR_DOMAIN> to create your first admin account
+```
 
-   ```bash
-   openssl rand -hex 32
-   ```
+## Multi-instance deployment
 
-3. Edit `.env` — set `POSTGRES_PASSWORD`, `DB_URL`, `ENDPOINT`, and `ADMIN_ENDPOINT`.
+When running multiple Logto instances that share one PostgreSQL server:
 
-4. Start the stack:
+1. **Remove the `postgres` service** from `docker-compose.yml` — keep only `logto-migration` and `app`.
+2. **Remove `container_name`** from the `app` service so Docker Compose generates unique names per project.
+3. **Point `DB_URL`** to your shared remote database (each instance should use its own database name).
+4. **Remove the `volumes:` section** (the `logto-pg` volume is no longer needed).
 
-   ```bash
-   docker compose up -d
-   ```
+Example diff for multi-instance:
 
-5. The admin console will be available at your configured `ADMIN_ENDPOINT`. Create your first admin account on first visit.
+```diff
+  app:
+    image: svhd/logto:${TAG}
+-   container_name: logto-app
+    command: ["start"]
+    ...
+
+- postgres:
+-   image: postgres:17-alpine
+-   ...
+
+- volumes:
+-   logto-pg:
+```
+
+Start each instance from its own directory with a dedicated `.env`:
+
+```bash
+# Instance A
+cd /srv/www/logto-a && docker compose -p logto-a up -d
+
+# Instance B
+cd /srv/www/logto-b && docker compose -p logto-b up -d
+```
+
+Use `-p` (project name) to avoid container name collisions.
 
 ## Reverse Proxy (Caddy)
 
@@ -52,10 +107,12 @@ console.<YOUR_DOMAIN> {
 }
 ```
 
-## Data Persistence
-
-PostgreSQL data is stored in a named Docker volume (`logto-pg`). Back it up with:
+## Backup
 
 ```bash
+# Single-instance (local postgres container)
 docker exec logto-postgres pg_dump -U logto logto_prod > backup.sql
+
+# Multi-instance (remote DB — adjust connection string)
+pg_dump -h <DB_HOST> -U logto logto_prod > backup.sql
 ```
